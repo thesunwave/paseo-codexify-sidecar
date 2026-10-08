@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm test
+      - run: node --check src/proxy.mjs
+      - run: node --check src/sidecar.mjs
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm test
+      - run: bash -n install.sh
+      - run: ./install.sh --dry-run --state-dir /tmp/paseo-ci-sidecar
+      - run: ./install.sh --check --state-dir /tmp/paseo-ci-sidecar
+      - run: test ! -e /tmp/paseo-ci-sidecar
