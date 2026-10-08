@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "paseo": {
+      "command": "/ABSOLUTE/PATH/TO/node",
+      "args": ["/ABSOLUTE/PATH/TO/paseo-codexify-sidecar/src/sidecar.mjs"],
+      "mode": "direct",
+      "env": {
+        "PASEO_BRIDGE_SOCKET": "/ABSOLUTE/PRIVATE/DIR/controller.sock",
+        "PASEO_BRIDGE_WORKSPACE_ROOT": "/ABSOLUTE/WORKSPACE/ROOT"
+      }
+    }
+  }
+}
+
