@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { createConnection } from 'node:net';
+import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 const providerModule = process.env.POC_PROVIDER_MODULE || '../../paseo-chatgpt-provider/server/provider.ts';
 const { createChatGptCodexifyProvider } = await import(pathToFileURL(resolve(providerModule)).href);
 
 const base=process.env.POC_PROXY_URL||'http://127.0.0.1:38722/mcp';
-const workspace=process.env.POC_WORKSPACE;
+const workspace=realpathSync(process.env.POC_WORKSPACE);
 const socket=process.env.CODEXIFY_CHATGPT_BACKEND_SOCKET;
 let sid=null,id=1;
 async function mcp(method, params={}) {

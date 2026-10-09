@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const host = '127.0.0.1';
@@ -102,16 +103,17 @@ function patchTools(body, tools) {
 }
 
 async function bindWorkspace(workspace, original, headers) {
+  const canonicalWorkspace = realpathSync(workspace);
   const request = {
     jsonrpc:'2.0',id:'paseo-workspace-'+Date.now(),method:'tools/call',
-    params:{name:'set_project_root',arguments:{path:workspace,createWorktree:false},
+    params:{name:'set_project_root',arguments:{path:canonicalWorkspace,createWorktree:false},
       ...(original.params?._meta ? {_meta:original.params._meta} : {})},
   };
   const response = await fetch(upstreamUrl,{method:'POST',headers,body:JSON.stringify(request),signal:AbortSignal.timeout(10000)});
   const payload=decode(await response.text());
   if(!response.ok || payload?.error || payload?.result?.isError || !payload?.result?.structuredContent?.active_root)
     throw new Error('Codexify workspace binding failed: enable multiProject and allow '+workspace);
-  if(payload.result.structuredContent.active_root!==workspace)
+  if(payload.result.structuredContent.active_root!==canonicalWorkspace)
     throw new Error('Codexify returned different active workspace; refusing to execute against it');
 }
 export function startProxy(runtime) {
