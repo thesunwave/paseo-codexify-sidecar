@@ -1,100 +1,115 @@
-# paseo-codexify-sidecar — architectural PoC
+# Paseo–Codexify Sidecar
 
-A **standalone MCP sidecar** that connects Paseo to a **stock, unmodified Codexify**. It uses two external MCP tools and a controller socket compatible with the existing Paseo ChatGPT provider.
+**v0.2.0-alpha.1 · macOS installer · MIT**
 
-Status: feasibility proof only. **Do not install this instead of the published alpha yet.**
+Run the [Paseo ChatGPT provider](https://github.com/thesunwave/paseo-chatgpt-provider) against a **stock, unmodified Codexify** instance instead of maintaining a patched Codexify fork.
+
+The sidecar acts as a local MCP HTTP proxy for ChatGPT and as a private Unix socket controller for Paseo:
+
+~~~text
+       ChatGPT connector (HTTPS tunnel)
+                    |
+            MCP proxy :38722
+               /          \
+   2 backend tools       All native tools
+   attach / exchange       forwarded
+         |                     |
+       sidecar           stock Codexify :3000
+         |                     |
+ Unix controller         project shell/Git/files
+         |
+      Paseo provider
+~~~
+
+It observes native tool calls, correlates them with the attached model worker, and emits bounded tool previews for Paseo. Native shell sessions are interrupted using Codexify's existing write_stdin API when Paseo cancels a task. **No upstream Codexify modifications required.**
 
 ## Verified
 
-Tested on macOS with the official Codexify **v1.6.6** release in an isolated instance (not the installed Codexify service):
+- Official Codexify **v1.6.6** and **v1.7.0** on macOS, in isolated instances.
+- Native tools exposed alongside sidecar attach/exchange; task dispatch → real exec_command → assistant response → durable Paseo timeline.
+- Native Shell cards with start/complete events, command/output and exit status.
+- Cancellation of real long-running sleep process via Ctrl-C, not merely HTTP abort.
+- Per-caller backend isolation using OpenAI session metadata when supplied, falling back to transport session identity.
+- Workspace selection through the stock set_project_root tool, so the current Codexify instance must run in multi-project mode.
+- Stale-run recovery after a sidecar restart, preserved session IDs across reattach, and durable Paseo history.
+- Six automated unit/integration tests.
 
-1. Codexify launches this Node.js process through its standard mcpServers configuration, with mode=direct.
-2. It exposes paseo__paseo_backend_attach and paseo__paseo_backend_exchange alongside its normal exec_command tool.
-3. attach returns a temporary worker session for an explicit workspace.
-4. The existing Paseo controller protocol dispatches a task through the sidecar socket.
-5. exchange delivers the task and accepts the answer. A real Codexify exec_command successfully ran pwd.
-6. The unchanged Paseo provider accepted the sidecar as its controller, completed a real turn, and persisted user and assistant timeline messages.
+**Not yet validated:** connecting a *real* ChatGPT conversation to this new proxy endpoint over an external authenticated HTTPS tunnel, or a completely clean-machine LaunchAgent install. These require interactive user access, not just simulated MCP traffic. Do not present this as production-grade until those tests pass.
 
-Automated sidecar unit tests also cover a second turn, explicit cancellation delivery, private workspace boundaries, finish, and unknown worker rejection.
+## Installation
 
-## Process layout
-
-~~~text
-Paseo provider ----------------- Unix socket ----> sidecar controller
-                                                       |
-ChatGPT -> stock Codexify -> MCP bridge -> sidecar attach/exchange
-                |
-                +-- ordinary Codexify exec_command / git / filesystem tools
-~~~
-
-The controller and the MCP service are two interfaces of the same sidecar process. Stock Codexify already implements the MCP client/bridge, so it requires no source changes for basic dispatch.
-
-## Running it on an isolated stock Codexify
-
-Requirements: Node.js >= 20, macOS, official Codexify >= 1.6.6 and an existing test workspace. Use **one OS user** for stock Codexify and Paseo while testing. The socket parent and socket are deliberately user-private (0700/0600).
-
-In an isolated Codexify config, register this upstream:
-
-~~~json
-{
-  "mcpServers": {
-    "paseo": {
-      "command": "/absolute/path/to/node",
-      "args": ["/absolute/path/to/paseo-codexify-sidecar/src/sidecar.mjs"],
-      "mode": "direct",
-      "env": {
-        "PASEO_BRIDGE_SOCKET": "/absolute/private/path/controller.sock",
-        "PASEO_BRIDGE_WORKSPACE_ROOT": "/absolute/path/to/allowed/workspaces"
-      }
-    }
-  }
-}
-~~~
-
-The sidecar creates the controller socket's parent directory (if missing) and requires it to be owned by the same user with no group/world permissions. It rejects workspace paths outside the configured allowed root, including symlink traversal.
-
-With Codexify running, enable the corresponding Paseo provider socket environment in the **Paseo daemon**, not merely in an unrelated terminal:
+On a Mac under the **same desktop user that runs Paseo**:
 
 ~~~sh
-CODEXIFY_CHATGPT_BACKEND_SOCKET=/absolute/private/path/controller.sock
+git clone --branch v0.2.0-alpha.1 --depth 1 https://github.com/thesunwave/paseo-codexify-sidecar.git
+cd paseo-codexify-sidecar
+
+./install.sh --dry-run
+./install.sh
+./install.sh --check
 ~~~
 
-Attach from a ChatGPT conversation using the sidecar's externally bridged MCP tools:
+The installer:
 
-- paseo__paseo_backend_attach with the absolute workspace.
-- paseo__paseo_backend_exchange with session_id and wait=true; poll again after idle.
-- When a task command arrives, call ordinary Codexify coding tools and send outbound result/error using command_seq.
-- Keep the ChatGPT turn active until the sidecar sends finish.
+- Reuses a responding Codexify server without restarting it, or downloads a SHA-256-verified official **Codexify v1.7.0** binary and starts a **new independent per-user LaunchAgent** on localhost.
+- Copies the sidecar to a private per-user state directory, starts a per-user proxy LaunchAgent, and preserves saved session state.
+- Installs the pinned Paseo provider **v0.2.0-alpha.1** if the Paseo CLI/daemon is available, without overriding an existing installation.
+- Configures the sidecar controller socket for future Paseo processes. The provider also auto-detects the sidecar's default socket.
+- Never changes or restarts an existing installed Codexify binary, service, or configuration.
 
-No new tool definitions or runtime changes are necessary inside stock Codexify for the *basic* flow. Starting an **isolated** Codexify instance for testing is recommended; do not restart a production service.
+Use the options --check, --dry-run, --uninstall, --skip-provider, --skip-stock, --state-dir, --workspace-root, --upstream and --proxy-port as necessary. --uninstall stops the installer-owned sidecar agent and removes an installer-owned plugin only; it preserves Codexify and state files.
 
-## Tests
+For an already configured Codexify instance, it must expose set_project_root (multiProject=true) and have access to the requested shared workspace root. **The installer will not silently change a running Codexify service's configuration.**
+
+### Complete these interactive steps
+
+1. **HTTPS connector/tunnel.** Expose the proxy's loopback endpoint (by default, http://127.0.0.1:38722/mcp) using your existing **authenticated HTTPS tunnel** and point the ChatGPT connector to that endpoint. Do not expose the unauthenticated loopback server directly to the public Internet. The original Codexify connector URL may require updating or a separate connector.
+2. **Paseo.** Enable trusted plugins in Paseo Settings → Plugins. If it was already running when the installer changed the socket environment, restart Paseo when convenient; the v0.2 provider detects the default user-private socket automatically.
+3. **ChatGPT.** Open a dedicated conversation with the new connector and ask it to attach to a workspace through paseo_backend_attach. Then keep calling paseo_backend_exchange with wait=true until finish, using ordinary Codexify tools to process tasks and returning an outbound result/error for each task.
+4. **Check.** Open that workspace in Paseo and select Attached ChatGPT. Try a read-only command such as git status --short --branch. Check the user message, native Shell card and assistant reply, and then restart/reopen the same Paseo chat to verify history.
+
+The ChatGPT assistant must remain in a long-lived exchange loop; the provider doesn't initiate new ChatGPT turns itself.
+
+## Running without the installer
+
+Set these environment variables and run Node >=20:
+
+~~~sh
+PASEO_BRIDGE_MODE=proxy \
+PASEO_BRIDGE_PORT=38722 \
+PASEO_BRIDGE_UPSTREAM=http://127.0.0.1:3000/mcp \
+PASEO_BRIDGE_WORKSPACE_ROOT=/Users/Shared/PaseoWorkspaces \
+PASEO_BRIDGE_SOCKET="$HOME/.local/share/paseo-codexify-sidecar/controller.sock" \
+node src/sidecar.mjs
+~~~
+
+Only localhost is bound for the MCP proxy. The controller socket parent must be owned by the sidecar user and accessible only to that user (0700); its socket is 0600. This works when Codexify uses a *different service user* because communication between proxy and Codexify is over HTTP loopback; the Paseo provider and sidecar should use the same desktop user.
+
+The older stdio-MCP plugin mode from the prototype remains for experimentation, but it cannot observe arbitrary Codexify-native tools and therefore is **not** the recommended integration.
+
+## Security and limitations
+
+- The proxy delegates all ordinary Codexify tool calls to the upstream with the same permissions as the Codexify process. Never install an untrusted Paseo or Codexify plugin.
+- The sidecar holds short bounded request/response previews and session identifiers in an owner-private state file. Redaction is best-effort: avoid running commands that print secrets. Tool output itself is not a substitute for audited secret handling.
+- A ChatGPT conversation is identified by the hashed openai/session metadata when supplied, or by its MCP transport session. If the transport changes without stable session metadata, reattach is needed; the proxy refuses ambiguous callers.
+- The sidecar records *model-visible* tool calls. It doesn't observe internal sub-operations performed by Codexify tools.
+- Cancellation actively interrupts tracked exec_command shell sessions by calling Codexify's write_stdin with Ctrl-C. Other types of side effects might already have occurred or continue in the upstream; cancellation cannot undo them.
+- The MCP proxy buffers normal tool responses instead of streaming arbitrary event data from native tools. Native tool progress is represented in Paseo's controller polling timeline.
+- Saved model workers are marked stale after sidecar restart until the same conversation reattaches. A failed in-flight run does not resume automatically; Paseo's previous user/assistant/tool history still replays independently.
+- The controller uses a local private Unix socket. The installer currently supports macOS; runtime source may run on other Unix systems but Linux service packaging and Windows support are not guaranteed.
+- Existing authenticated Codexify endpoints are forwarded through with authorization headers; HTTPS tunnel authentication must be configured independently.
+
+## Development
 
 ~~~sh
 npm test
+node --check src/sidecar.mjs
+node --check src/proxy.mjs
+./install.sh --dry-run
+./install.sh --check
 ~~~
 
-The stock Codexify verification was performed manually using its HTTP MCP endpoint plus the sidecar controller socket. The existing Paseo provider was also exercised against it: user message -> task -> native exec_command -> assistant message, with persistence v2. These are integration results, **not** evidence of a fresh-machine production installation.
+The tests include transport-level tool telemetry, cancellation, caller isolation, and restart recovery. The stock Codexify E2E scripts in scripts/ are for an isolated test instance and must be configured through environment variables; do not point them at production services.
 
-## Gaps before replacing the fork
-
-| Gap | Reason | Required approach |
-| --- | --- | --- |
-| Stable worker identity | Stock Codexify's upstream MCP bridge does not forward the ChatGPT conversation identity; attach takes an explicit workspace and returns a bearer-like random session ID instead | Minimal generic stable-caller identity hook, or rework of caller authorization |
-| Automatic live tool timeline | External MCP server cannot observe arbitrary native Codexify tool starts, output previews and completions; controller timeline stays empty | General tool lifecycle event stream/hook, ideally redacted and bounded |
-| Timely cancel/steer during native tools | Commands are queued for the next exchange. A running exec_command does not automatically receive them, unlike the fork's injected control handling | Generic per-conversation control/cancellation hook |
-| Cross-user service | Sidecar socket is private to the Codexify user; Paseo under another macOS UID cannot connect | Explicitly authenticated, owner-safe IPC with identity/permission design |
-| Crash/restart durability | Sidecar session pool lives in memory; restarting the Codexify process loses attached workers | Durable sidecar worker state or explicit reattach. Paseo provider already replays its own history |
-| Workspace rebinding | Workers are explicitly bound to a single canonical workspace, not dynamically rebound as in the fork | A safe workspace-selection API or explicit worker-per-workspace strategy |
-| Automation/security | Unsandboxed MCP upstream runs with Codexify user's authority | Explicit installation/approval, access control, audit, and threat model |
-
-The minimal upstream proposal is **not** a Paseo-specific feature or a dynamic Rust plugin API: expose a stable caller identity and a bounded tool-lifecycle/cancel hook to trusted MCP extensions. This allows keeping orchestration outside Codexify and avoids tracking a full fork.
-
-## What was not changed
-
-- No Codexify source code was edited.
-- No existing Codexify LaunchDaemon, binary or user config was modified.
-- No Paseo provider source was modified.
-- This is a local prototype with tests; do not confuse it with the public provider alpha.
-
+This code is licensed under MIT. The sidecar is intentionally separate from Codexify and Paseo core.
 
